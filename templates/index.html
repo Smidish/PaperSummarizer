@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Paper Summarizer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="container">
+    <h1>📄 Paper Summarizer</h1>
+    <p class="subtitle">Upload a research paper PDF to generate an AI-powered summary importable into Zotero.</p>
+
+    {% if error %}
+      <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    {% if zotero_success %}
+      <div class="alert alert-success">✅ Item successfully saved to your Zotero library!</div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('index') }}" enctype="multipart/form-data">
+      <section class="card">
+        <h2>1. Upload PDF</h2>
+        <input type="file" name="pdf" accept=".pdf" required>
+      </section>
+
+      <section class="card">
+        <h2>2. Summary Sections</h2>
+        <p>Select the sections to include in the summary:</p>
+        <div class="checkbox-grid">
+          {% set default_sections = ["Snapshot", "Key Findings", "Objective", "Methods", "Results", "Discussion", "Conclusion"] %}
+          {% for section in default_sections %}
+            <label class="checkbox-label">
+              <input type="checkbox" name="sections" value="{{ section }}" checked>
+              {{ section }}
+            </label>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>3. Special Section (optional)</h2>
+        <input type="text" name="custom_section" placeholder="e.g. Limitations, Future Work" class="text-input">
+      </section>
+
+      <button type="submit" class="btn btn-primary"
+              aria-label="Generate Summary and Tags">🔍 Generate Summary &amp; Tags</button>
+    </form>
+
+    {% if summary or tags %}
+      <hr>
+
+      {% if summary %}
+        <section class="card">
+          <h2>Summary</h2>
+          <pre class="output-text">{{ summary }}</pre>
+        </section>
+      {% endif %}
+
+      {% if tags %}
+        <section class="card">
+          <h2>Tags / Key Concepts</h2>
+          <pre class="output-text">{{ tags }}</pre>
+        </section>
+      {% endif %}
+
+      <hr>
+
+      <section class="card">
+        <h2>Export to Zotero</h2>
+        <p>Fill in the paper metadata, then choose an export method.</p>
+
+        <div class="meta-fields">
+          <label>Title:
+            <input type="text" id="meta-title" class="text-input" placeholder="Paper title">
+          </label>
+          <label>Authors <small>(semicolon-separated, e.g. "Alice Smith; Bob Jones")</small>:
+            <input type="text" id="meta-authors" class="text-input" placeholder="First Last; First2 Last2">
+          </label>
+          <label>Year:
+            <input type="text" id="meta-year" class="text-input" placeholder="2024">
+          </label>
+          <label>DOI:
+            <input type="text" id="meta-doi" class="text-input" placeholder="10.1234/example">
+          </label>
+          <label>URL:
+            <input type="text" id="meta-url" class="text-input" placeholder="https://...">
+          </label>
+        </div>
+
+        <div class="export-options">
+          <div class="export-option">
+            <h3>Option A – Download CSL-JSON file</h3>
+            <p>Download a JSON file you can import manually via <em>File → Import</em> in Zotero.</p>
+            <form method="post" action="{{ url_for('export_csljson') }}" id="form-csljson">
+              <input type="hidden" name="summary" value="{{ summary }}">
+              <input type="hidden" name="tags" value="{{ tags }}">
+              <input type="hidden" name="title" id="csljson-title">
+              <input type="hidden" name="authors" id="csljson-authors">
+              <input type="hidden" name="year" id="csljson-year">
+              <button type="submit" class="btn btn-secondary"
+                      aria-label="Download Zotero JSON file"
+                      onclick="syncMeta('csljson')">⬇ Download Zotero JSON</button>
+            </form>
+          </div>
+
+          <div class="export-option">
+            <h3>Option B – Save directly to Zotero library</h3>
+            <p>Requires your Zotero API key and library ID.</p>
+            <form method="post" action="{{ url_for('export_zotero_api') }}" id="form-zotero-api">
+              <input type="hidden" name="summary" value="{{ summary }}">
+              <input type="hidden" name="tags" value="{{ tags }}">
+              <input type="hidden" name="title" id="zapi-title">
+              <input type="hidden" name="authors" id="zapi-authors">
+              <input type="hidden" name="year" id="zapi-year">
+              <input type="hidden" name="doi" id="zapi-doi">
+              <input type="hidden" name="url" id="zapi-url">
+
+              <label>Zotero API key:
+                <input type="password" name="zotero_api_key" class="text-input" required>
+              </label>
+              <label>Library type:
+                <select name="lib_type" class="text-input">
+                  <option value="user">User</option>
+                  <option value="group">Group</option>
+                </select>
+              </label>
+              <label>Library ID:
+                <input type="text" name="lib_id" class="text-input" required placeholder="1234567">
+              </label>
+              <label>Collection ID (optional):
+                <input type="text" name="collection" class="text-input" placeholder="ABCD1234">
+              </label>
+
+              <button type="submit" class="btn btn-primary"
+                      aria-label="Save to Zotero Library"
+                      onclick="syncMeta('zapi')">☁ Save to Zotero Library</button>
+            </form>
+          </div>
+        </div>
+      </section>
+    {% endif %}
+  </div>
+
+  <script>
+    function syncMeta(prefix) {
+      document.getElementById(prefix + '-title').value =
+        document.getElementById('meta-title').value;
+      document.getElementById(prefix + '-authors').value =
+        document.getElementById('meta-authors').value;
+      document.getElementById(prefix + '-year').value =
+        document.getElementById('meta-year').value;
+      if (prefix === 'zapi') {
+        document.getElementById('zapi-doi').value =
+          document.getElementById('meta-doi').value;
+        document.getElementById('zapi-url').value =
+          document.getElementById('meta-url').value;
+      }
+    }
+  </script>
+</body>
+</html>
