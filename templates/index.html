@@ -54,14 +54,14 @@
       {% if summary %}
         <section class="card">
           <h2>Summary</h2>
-          <pre class="output-text">{{ summary }}</pre>
+          <textarea id="summary-text" class="output-text" style="width:100%;resize:vertical;">{{ summary }}</textarea>
         </section>
       {% endif %}
 
       {% if tags %}
         <section class="card">
           <h2>Tags / Key Concepts</h2>
-          <pre class="output-text">{{ tags }}</pre>
+          <textarea id="tags-text" class="output-text" style="width:100%;resize:vertical;">{{ tags }}</textarea>
         </section>
       {% endif %}
 
@@ -73,19 +73,24 @@
 
         <div class="meta-fields">
           <label>Title:
-            <input type="text" id="meta-title" class="text-input" placeholder="Paper title">
+            <input type="text" id="meta-title" class="text-input" placeholder="Paper title"
+                   value="{{ meta.get('title', '') }}">
           </label>
           <label>Authors <small>(semicolon-separated, e.g. "Alice Smith; Bob Jones")</small>:
-            <input type="text" id="meta-authors" class="text-input" placeholder="First Last; First2 Last2">
+            <input type="text" id="meta-authors" class="text-input" placeholder="First Last; First2 Last2"
+                   value="{{ meta.get('authors', '') }}">
           </label>
           <label>Year:
-            <input type="text" id="meta-year" class="text-input" placeholder="2024">
+            <input type="text" id="meta-year" class="text-input" placeholder="2024"
+                   value="{{ meta.get('year', '') }}">
           </label>
           <label>DOI:
-            <input type="text" id="meta-doi" class="text-input" placeholder="10.1234/example">
+            <input type="text" id="meta-doi" class="text-input" placeholder="10.1234/example"
+                   value="{{ meta.get('doi', '') }}">
           </label>
           <label>URL:
-            <input type="text" id="meta-url" class="text-input" placeholder="https://...">
+            <input type="text" id="meta-url" class="text-input" placeholder="https://..."
+                   value="{{ meta.get('url', '') }}">
           </label>
         </div>
 
@@ -93,24 +98,27 @@
           <div class="export-option">
             <h3>Option A – Download CSL-JSON file</h3>
             <p>Download a JSON file you can import manually via <em>File → Import</em> in Zotero.</p>
-            <form method="post" action="{{ url_for('export_csljson') }}" id="form-csljson">
-              <input type="hidden" name="summary" value="{{ summary }}">
-              <input type="hidden" name="tags" value="{{ tags }}">
+            <form method="post" action="{{ url_for('export_csljson') }}" id="form-csljson"
+                  onsubmit="syncMeta('csljson')">
+              <input type="hidden" name="summary" id="csljson-summary">
+              <input type="hidden" name="tags" id="csljson-tags">
               <input type="hidden" name="title" id="csljson-title">
               <input type="hidden" name="authors" id="csljson-authors">
               <input type="hidden" name="year" id="csljson-year">
+              <input type="hidden" name="doi" id="csljson-doi">
+              <input type="hidden" name="url" id="csljson-url">
               <button type="submit" class="btn btn-secondary"
-                      aria-label="Download Zotero JSON file"
-                      onclick="syncMeta('csljson')">⬇ Download Zotero JSON</button>
+                      aria-label="Download Zotero JSON file">⬇ Download Zotero JSON</button>
             </form>
           </div>
 
           <div class="export-option">
             <h3>Option B – Save directly to Zotero library</h3>
             <p>Requires your Zotero API key and library ID.</p>
-            <form method="post" action="{{ url_for('export_zotero_api') }}" id="form-zotero-api">
-              <input type="hidden" name="summary" value="{{ summary }}">
-              <input type="hidden" name="tags" value="{{ tags }}">
+            <form method="post" action="{{ url_for('export_zotero_api') }}" id="form-zotero-api"
+                  onsubmit="syncMeta('zapi')">
+              <input type="hidden" name="summary" id="zapi-summary">
+              <input type="hidden" name="tags" id="zapi-tags">
               <input type="hidden" name="title" id="zapi-title">
               <input type="hidden" name="authors" id="zapi-authors">
               <input type="hidden" name="year" id="zapi-year">
@@ -118,24 +126,29 @@
               <input type="hidden" name="url" id="zapi-url">
 
               <label>Zotero API key:
-                <input type="password" name="zotero_api_key" class="text-input" required>
+                <input type="password" name="zotero_api_key" id="zapi-key-input" class="text-input" required>
               </label>
               <label>Library type:
-                <select name="lib_type" class="text-input">
+                <select name="lib_type" id="zapi-lib-type" class="text-input">
                   <option value="user">User</option>
                   <option value="group">Group</option>
                 </select>
               </label>
               <label>Library ID:
-                <input type="text" name="lib_id" class="text-input" required placeholder="1234567">
+                <input type="text" name="lib_id" id="zapi-lib-id" class="text-input" required placeholder="1234567">
               </label>
               <label>Collection ID (optional):
-                <input type="text" name="collection" class="text-input" placeholder="ABCD1234">
+                <input type="text" name="collection" id="zapi-collection" class="text-input" placeholder="ABCD1234">
               </label>
 
-              <button type="submit" class="btn btn-primary"
-                      aria-label="Save to Zotero Library"
-                      onclick="syncMeta('zapi')">☁ Save to Zotero Library</button>
+              <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem;">
+                <button type="submit" class="btn btn-primary"
+                        aria-label="Save to Zotero Library">☁ Save to Zotero Library</button>
+                <button type="button" class="btn btn-secondary"
+                        onclick="saveZoteroSettings()"
+                        aria-label="Save Zotero Settings">💾 Save Settings</button>
+              </div>
+              <p style="font-size:0.8rem;color:#888;margin-top:0.4rem;">⚠️ Settings (including API key) are saved in plaintext on the server. Only use on a trusted, private machine.</p>
             </form>
           </div>
         </div>
@@ -151,13 +164,60 @@
         document.getElementById('meta-authors').value;
       document.getElementById(prefix + '-year').value =
         document.getElementById('meta-year').value;
-      if (prefix === 'zapi') {
-        document.getElementById('zapi-doi').value =
+
+      // Sync editable summary and tags textarea values
+      var summaryEl = document.getElementById('summary-text');
+      var tagsEl = document.getElementById('tags-text');
+      document.getElementById(prefix + '-summary').value =
+        summaryEl ? summaryEl.value : '';
+      document.getElementById(prefix + '-tags').value =
+        tagsEl ? tagsEl.value : '';
+
+      if (prefix === 'csljson' || prefix === 'zapi') {
+        document.getElementById(prefix + '-doi').value =
           document.getElementById('meta-doi').value;
-        document.getElementById('zapi-url').value =
+        document.getElementById(prefix + '-url').value =
           document.getElementById('meta-url').value;
       }
     }
+
+    function saveZoteroSettings() {
+      var settings = {
+        api_key: document.getElementById('zapi-key-input').value,
+        lib_type: document.getElementById('zapi-lib-type').value,
+        lib_id: document.getElementById('zapi-lib-id').value,
+        collection: document.getElementById('zapi-collection').value
+      };
+      fetch('/settings/zotero', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(settings)
+      }).then(function(r) {
+        if (r.ok) { alert('Zotero settings saved!'); }
+        else { alert('Failed to save settings.'); }
+      });
+    }
+
+    // Auto-populate Zotero settings on page load
+    (function loadZoteroSettings() {
+      fetch('/settings/zotero')
+        .then(function(r) { return r.json(); })
+        .then(function(s) {
+          if (s.api_key !== undefined && document.getElementById('zapi-key-input')) {
+            document.getElementById('zapi-key-input').value = s.api_key || '';
+          }
+          if (s.lib_type !== undefined && document.getElementById('zapi-lib-type')) {
+            document.getElementById('zapi-lib-type').value = s.lib_type || 'user';
+          }
+          if (s.lib_id !== undefined && document.getElementById('zapi-lib-id')) {
+            document.getElementById('zapi-lib-id').value = s.lib_id || '';
+          }
+          if (s.collection !== undefined && document.getElementById('zapi-collection')) {
+            document.getElementById('zapi-collection').value = s.collection || '';
+          }
+        })
+        .catch(function() {});
+    })();
   </script>
 </body>
 </html>

@@ -65,6 +65,9 @@ db.sqlite3-journal
 instance/
 .webassets-cache
 
+# Zotero user settings (may contain API keys)
+zotero_settings.json
+
 # Scrapy stuff:
 .scrapy
 

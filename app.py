@@ -2,9 +2,11 @@ import html
 import io
 import json
 import os
+import re
+import uuid
 
 import requests
-from flask import Flask, render_template, request, send_file
+from flask import Flask, jsonify, render_template, request, send_file
 from PyPDF2 import PdfReader
 from cerebras.cloud.sdk import Cerebras
 
@@ -17,6 +19,8 @@ MAX_TAGS_TEXT_LENGTH = 8000
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload limit
+
+ZOTERO_SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "zotero_settings.json")
 
 
 def extract_text_from_pdf(file_storage):
@@ -45,12 +49,29 @@ def call_cerebras(prompt):
         return "Error: Could not parse Cerebras response."
 
 
+def extract_metadata_from_text(paper_text):
+    """Use the LLM to extract bibliographic metadata from paper text."""
+    meta_prompt = (
+        "From the following paper text, extract the bibliographic metadata. "
+        "Return ONLY a JSON object with these keys: title, authors (semicolon-separated), "
+        "year, doi, url. If a field cannot be determined, use an empty string.\n\n"
+        + paper_text[:MAX_TAGS_TEXT_LENGTH]
+    )
+    raw = call_cerebras(meta_prompt)
+    # Strip markdown code fences if present
+    raw = re.sub(r"^```[a-z]*\n?|\n?```$", "", raw.strip(), flags=re.IGNORECASE | re.MULTILINE)
+    try:
+        return json.loads(raw.strip())
+    except Exception:
+        return {}
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     summary = None
     tags = None
     error = None
-
+    meta = {}
 
     if request.method == "POST":
         pdf_file = request.files.get("pdf")
@@ -94,10 +115,12 @@ def index():
                     "comma-separated only:\n\n" + paper_text[:MAX_TAGS_TEXT_LENGTH]
                 )
                 tags = call_cerebras(tags_prompt)
+
+                meta = extract_metadata_from_text(paper_text)
             except Exception as exc:
                 error = f"Error processing request: {exc}"
 
-    return render_template("index.html", summary=summary, tags=tags, error=error)
+    return render_template("index.html", summary=summary, tags=tags, error=error, meta=meta)
 
 
 @app.route("/export/csljson", methods=["POST"])
@@ -105,23 +128,38 @@ def export_csljson():
     title = request.form.get("title", "")
     authors = request.form.get("authors", "")
     year = request.form.get("year", "")
+    doi = request.form.get("doi", "")
+    paper_url = request.form.get("url", "")
     summary = request.form.get("summary", "")
     tags_str = request.form.get("tags", "")
 
     tags = [t.strip() for t in tags_str.split(",") if t.strip()]
 
+    author_list = []
+    for author in authors.split(";"):
+        author = author.strip()
+        if not author:
+            continue
+        parts = author.rsplit(" ", 1)
+        if len(parts) == 2:
+            first, last = parts
+        else:
+            first, last = "", parts[0]
+        author_list.append({"family": last, "given": first})
+
     csl_item = {
+        "id": str(uuid.uuid4()),
         "type": "article-journal",
         "title": title,
-        "author": [
-            {"family": author.strip(), "given": ""}
-            for author in authors.split(";")
-            if author.strip()
-        ],
-        "issued": {"date-parts": [[year]]} if year else None,
-        "note": summary,
-        "keyword": ", ".join(tags),
+        "author": author_list,
+        "issued": {"date-parts": [[int(year)]]} if year and year.strip().lstrip("-").isdigit() else None,
+        "abstract": summary,
+        "categories": tags,
     }
+    if doi:
+        csl_item["DOI"] = doi
+    if paper_url:
+        csl_item["URL"] = paper_url
 
     data = json.dumps([csl_item], indent=2)
     return send_file(
@@ -139,7 +177,6 @@ def build_zotero_item(form):
     doi = form.get("doi", "")
     paper_url = form.get("url", "")
     tags_str = form.get("tags", "")
-    summary_md = form.get("summary", "")
 
     creators = []
     for author in authors.split(";"):
@@ -161,8 +198,6 @@ def build_zotero_item(form):
 
     tags = [{"tag": t.strip()} for t in tags_str.split(",") if t.strip()]
 
-    note_html = f"<pre>{html.escape(summary_md)}</pre>"
-
     return {
         "itemType": "journalArticle",
         "title": title,
@@ -172,7 +207,6 @@ def build_zotero_item(form):
         "url": paper_url,
         "abstractNote": "",
         "tags": tags,
-        "notes": [{"note": note_html}],
     }
 
 
@@ -193,16 +227,33 @@ def export_zotero_api():
     if collection:
         item["collections"] = [collection]
 
-    url = f"https://api.zotero.org/{user_or_group}s/{lib_id}/items"
+    base_url = f"https://api.zotero.org/{user_or_group}s/{lib_id}/items"
     headers = {
         "Zotero-API-Key": api_key,
         "Content-Type": "application/json",
     }
-    payload = [item]
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
+    # Step 1: POST the bibliographic item
+    resp = requests.post(base_url, headers=headers, json=[item], timeout=30)
     if not resp.ok:
         return f"Zotero API error: {resp.status_code} {resp.text}", 500
+
+    # Step 2: Extract the new item key and POST the note as a separate item
+    try:
+        item_key = resp.json()["success"]["0"]
+    except (KeyError, ValueError):
+        item_key = None
+
+    if item_key:
+        summary_md = request.form.get("summary", "")
+        note_html = f"<pre>{html.escape(summary_md)}</pre>"
+        note_item = {
+            "itemType": "note",
+            "parentItem": item_key,
+            "note": note_html,
+            "tags": [],
+        }
+        requests.post(base_url, headers=headers, json=[note_item], timeout=30)
 
     return render_template(
         "index.html",
@@ -210,7 +261,30 @@ def export_zotero_api():
         tags=request.form.get("tags"),
         error=None,
         zotero_success=True,
+        meta={},
     )
+
+
+@app.route("/settings/zotero", methods=["GET"])
+def get_zotero_settings():
+    if os.path.exists(ZOTERO_SETTINGS_FILE):
+        with open(ZOTERO_SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return jsonify(json.load(f))
+    return jsonify({})
+
+
+@app.route("/settings/zotero", methods=["POST"])
+def save_zotero_settings():
+    data = request.get_json(force=True) or {}
+    settings = {
+        "api_key": data.get("api_key", ""),
+        "lib_type": data.get("lib_type", "user"),
+        "lib_id": data.get("lib_id", ""),
+        "collection": data.get("collection", ""),
+    }
+    with open(ZOTERO_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+    return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":
