@@ -6,8 +6,11 @@ import os
 import requests
 from flask import Flask, render_template, request, send_file
 from PyPDF2 import PdfReader
+from cerebras.cloud.sdk import Cerebras
 
-PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY")
+
+# Cerebras API Key (free tier)
+CEREBRAS_API_KEY = ""
 
 MAX_SUMMARY_TEXT_LENGTH = 10000
 MAX_TAGS_TEXT_LENGTH = 8000
@@ -24,19 +27,22 @@ def extract_text_from_pdf(file_storage):
     return "\n".join(text)
 
 
-def call_perplexity(prompt):
-    url = "https://api.perplexity.ai/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    data = {
-        "model": "sonar",
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    resp = requests.post(url, headers=headers, json=data, timeout=60)
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+
+# Cerebras chat completion API
+def call_cerebras(prompt):
+    client = Cerebras(api_key=CEREBRAS_API_KEY)
+    response = client.chat.completions.create(
+        messages=[{"role": "user", "content": prompt}],
+        model="llama3.1-8b",
+        max_completion_tokens=1024,
+        temperature=0.2,
+        top_p=1,
+        stream=False
+    )
+    try:
+        return response.choices[0].message.content
+    except Exception:
+        return "Error: Could not parse Cerebras response."
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -45,53 +51,51 @@ def index():
     tags = None
     error = None
 
+
     if request.method == "POST":
-        if not PERPLEXITY_API_KEY:
-            error = "PERPLEXITY_API_KEY environment variable is not set."
+        pdf_file = request.files.get("pdf")
+        custom_section = request.form.get("custom_section", "").strip()
+        sections = request.form.getlist("sections")
+
+        if not pdf_file or pdf_file.filename == "":
+            error = "Please upload a PDF file."
         else:
-            pdf_file = request.files.get("pdf")
-            custom_section = request.form.get("custom_section", "").strip()
-            sections = request.form.getlist("sections")
+            try:
+                paper_text = extract_text_from_pdf(pdf_file)
 
-            if not pdf_file or pdf_file.filename == "":
-                error = "Please upload a PDF file."
-            else:
-                try:
-                    paper_text = extract_text_from_pdf(pdf_file)
-
-                    if not sections:
-                        sections = [
-                            "Snapshot",
-                            "Key Findings",
-                            "Objective",
-                            "Methods",
-                            "Results",
-                            "Discussion",
-                            "Conclusion",
-                        ]
-
-                    prompt_parts = [
-                        "You are summarizing an academic research paper for Zotero notes.",
-                        "Paper text:\n" + paper_text[:MAX_SUMMARY_TEXT_LENGTH],
-                        "Create a structured summary in Markdown using only these sections:",
+                if not sections:
+                    sections = [
+                        "Snapshot",
+                        "Key Findings",
+                        "Objective",
+                        "Methods",
+                        "Results",
+                        "Discussion",
+                        "Conclusion",
                     ]
-                    for s in sections:
-                        prompt_parts.append(f"- {s}")
-                    if custom_section:
-                        prompt_parts.append(
-                            f"Also add a section titled '{custom_section}'."
-                        )
 
-                    prompt = "\n\n".join(prompt_parts)
-                    summary = call_perplexity(prompt)
-
-                    tags_prompt = (
-                        "From the following paper text, extract 5-12 concise tags/key concepts, "
-                        "comma-separated only:\n\n" + paper_text[:MAX_TAGS_TEXT_LENGTH]
+                prompt_parts = [
+                    "You are summarizing an academic research paper for Zotero notes.",
+                    "Paper text:\n" + paper_text[:MAX_SUMMARY_TEXT_LENGTH],
+                    "Create a structured summary in Markdown using only these sections:",
+                ]
+                for s in sections:
+                    prompt_parts.append(f"- {s}")
+                if custom_section:
+                    prompt_parts.append(
+                        f"Also add a section titled '{custom_section}'."
                     )
-                    tags = call_perplexity(tags_prompt)
-                except Exception as exc:
-                    error = f"Error processing request: {exc}"
+
+                prompt = "\n\n".join(prompt_parts)
+                summary = call_cerebras(prompt)
+
+                tags_prompt = (
+                    "From the following paper text, extract 5-12 concise tags/key concepts, "
+                    "comma-separated only:\n\n" + paper_text[:MAX_TAGS_TEXT_LENGTH]
+                )
+                tags = call_cerebras(tags_prompt)
+            except Exception as exc:
+                error = f"Error processing request: {exc}"
 
     return render_template("index.html", summary=summary, tags=tags, error=error)
 
